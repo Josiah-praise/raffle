@@ -2,11 +2,10 @@
 pragma solidity ^0.8.23;
 
 import {IERC20} from "./interfaces/IERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-// TODO use openZeppelin's ownable contract and then protect setERC20 functions with onlyOwner
 
-contract Raffle {
-    address public immutable admin;
+contract Raffle is Ownable {
     uint256 public constant LEAST_DURATION = 1 hours;
     Config public raffleConfig;
     IERC20 public payoutToken;
@@ -15,8 +14,8 @@ contract Raffle {
     uint256 private _prizePool; // an accumulation of funding(from the admin)  and donations
 
     RaffleParticipant[] public raffleParticipants; // addresses that paid the raffle fee to enter the raffle
-    mapping(address=>uint256) public donations; // tracks total donations per donor
-    mapping(address=>uint256) public entries; // tracks number of entries per raffle participant particularly needed for weighted raffles
+    mapping(address => uint256) public donations; // tracks total donations per donor
+    mapping(address => uint256) public entries; // tracks number of entries per raffle participant particularly needed for weighted raffles
 
     enum LifeCycle {
         INACTIVE,
@@ -41,6 +40,7 @@ contract Raffle {
         address participant;
     }
     // the config for a raffle
+
     struct Config {
         uint256 duration;
         LifeCycle state;
@@ -49,8 +49,8 @@ contract Raffle {
         uint256 entryFee;
         uint256 minimumDonation;
         Type raffleType;
-        address ERC20EntryFeeTokenAddress;
-        address ERC20PayoutTokenAddress;
+        address erc20EntryFeeTokenAddress;
+        address erc20PayoutTokenAddress;
     }
 
     event RaffleInitialized(address indexed admin, uint256 id);
@@ -62,8 +62,8 @@ contract Raffle {
         uint256 entryFee,
         uint256 minimumDonation,
         Type raffleType,
-        address ERC20EntryFeeTokenAddress,
-        address ERC20PayoutTokenAddress
+        address erc20EntryFeeTokenAddress,
+        address erc20PayoutTokenAddress
     );
     event RaffleFunded(uint256 amount);
 
@@ -84,10 +84,9 @@ contract Raffle {
         Type _raffleType,
         uint256 nextRaffleId,
         address _admin
-    ) {
+    ) Ownable(_admin) {
         raffleConfig = createConfig(_duration, _payoutType, _entryFeeType, _entryFee, _minimumDonation, _raffleType);
 
-        admin = _admin;
         emit RaffleInitialized(_admin, nextRaffleId);
     }
 
@@ -113,8 +112,8 @@ contract Raffle {
             entryFee: _entryFee,
             minimumDonation: _minimumDonation,
             raffleType: _raffleType,
-            ERC20EntryFeeTokenAddress: address(0),
-            ERC20PayoutTokenAddress: address(0)
+            erc20EntryFeeTokenAddress: address(0),
+            erc20PayoutTokenAddress: address(0)
         });
 
         emit ConfigInfo(
@@ -132,25 +131,24 @@ contract Raffle {
         return newConfig;
     }
 
-    // TODO onlyadmin
     ///@notice allows an admin to set the address of the token that is used to pay
     /// entry fee for the raffle
     ///@dev this needs to be called if the entry fee asset is an ERC20
-    function setERC20EntryFeeTokenAddress(address ERC20Address) public {
+    function setErc20EntryFeeTokenAddress(address erc20Address) public onlyOwner{
         if (raffleConfig.entryFeeType != TokenType.ERC20) {
             revert InvalidConfig();
         }
 
-        if (address(0) == ERC20Address) {
+        if (address(0) == erc20Address) {
             revert ZeroAddressError();
         }
 
         // prevents an admin from changing the address once they've set it
-        if (raffleConfig.ERC20EntryFeeTokenAddress != address(0)) {
+        if (raffleConfig.erc20EntryFeeTokenAddress != address(0)) {
             revert InvalidConfig();
         }
 
-        raffleConfig.ERC20EntryFeeTokenAddress = ERC20Address;
+        raffleConfig.erc20EntryFeeTokenAddress = erc20Address;
         emit ConfigInfo(
             raffleConfig.duration,
             raffleConfig.state,
@@ -159,31 +157,30 @@ contract Raffle {
             raffleConfig.entryFee,
             raffleConfig.minimumDonation,
             raffleConfig.raffleType,
-            raffleConfig.ERC20EntryFeeTokenAddress,
-            raffleConfig.ERC20PayoutTokenAddress
+            raffleConfig.erc20EntryFeeTokenAddress,
+            raffleConfig.erc20PayoutTokenAddress
         );
     }
 
-    // TODO onlyadmin
     ///@notice allows an admin to set the address of the token that is used to pay
     /// that is payed out to the winner
     ///@dev this needs to be called if the payout asset is an ERC20
-    function setERC20PayoutTokenAddress(address ERC20Address) public {
+    function setErc20PayoutTokenAddress(address erc20Address) public onlyOwner {
         if (raffleConfig.payoutType != TokenType.ERC20) {
             revert InvalidConfig();
         }
 
-        if (address(0) == ERC20Address) {
+        if (address(0) == erc20Address) {
             revert ZeroAddressError();
         }
 
         // prevents an admin from changing the address once they've set it
-        if (raffleConfig.ERC20PayoutTokenAddress != address(0)) {
+        if (raffleConfig.erc20PayoutTokenAddress != address(0)) {
             revert InvalidConfig();
         }
 
-        raffleConfig.ERC20PayoutTokenAddress = ERC20Address;
-        payoutToken = IERC20(ERC20Address);
+        raffleConfig.erc20PayoutTokenAddress = erc20Address;
+        payoutToken = IERC20(erc20Address);
 
         emit ConfigInfo(
             raffleConfig.duration,
@@ -193,22 +190,20 @@ contract Raffle {
             raffleConfig.entryFee,
             raffleConfig.minimumDonation,
             raffleConfig.raffleType,
-            raffleConfig.ERC20EntryFeeTokenAddress,
-            raffleConfig.ERC20PayoutTokenAddress
+            raffleConfig.erc20EntryFeeTokenAddress,
+            raffleConfig.erc20PayoutTokenAddress
         );
     }
 
-
-    // TODO onlyadmin
     ///@notice changes a raffles state from INACTIVE to ACTIVE
     ///@dev an admin can call this anytime to activate a raffle and it only fails if the prizePool is empty (0)
-    function activateRaffle() public {
+    function activateRaffle() public onlyOwner{
         if (_prizePool == 0) revert PrizePoolEmptyError();
         raffleConfig.state = LifeCycle.ACTIVE;
     }
 
     ///@notice reward the winner with the selected token
-    function rewardWithERC20(uint256 amount, address payable winner, address ERC20Address)
+    function rewardWithErc20(uint256 amount, address payable winner, address erc20Address)
         internal
         pure
         returns (bool)
@@ -216,18 +211,17 @@ contract Raffle {
         // send the amount to the winner.
     }
 
-    // TODO onlyadmin
     ///@notice allows an admin to fund a raffle with ERC20 tokens
-    function fundRaffleWithERC20(uint256 amount, address from) public returns(bool){
+    function fundRaffleWithErc20(uint256 amount, address from) public onlyOwner returns (bool) {
         if (raffleConfig.payoutType != TokenType.ERC20) return false;
 
         // ensure that if the entry fee asset is of type ERC20 token
-        if (!_validateERC20EntryFeeTokenAddress()) {
+        if (!_validateErc20EntryFeeTokenAddress()) {
             revert EntryFeeTokenAddressNotSet();
         }
 
         // ensure that if the payout asset is of type ERC20 token
-        if (!_validateERC20PayoutTokenAddress()) {
+        if (!_validateErc20PayoutTokenAddress()) {
             revert PayoutTokenAddressNotSet();
         }
 
@@ -241,8 +235,7 @@ contract Raffle {
         return success;
     }
 
-    // TODO onlyadmin
-    function fundRaffleWithEth()public payable returns(bool) {
+    function fundRaffleWithEth() public payable onlyOwner returns (bool) {
         if (raffleConfig.payoutType != TokenType.ETH) return false;
 
         _prizePool += msg.value;
@@ -252,12 +245,12 @@ contract Raffle {
     }
 
     ///@notice checks that when entry fee asset is ERC20, an ERC20 address other than address 0 is set
-    function _validateERC20EntryFeeTokenAddress() private view returns (bool) {
-        return raffleConfig.ERC20EntryFeeTokenAddress != address(0);
+    function _validateErc20EntryFeeTokenAddress() private view returns (bool) {
+        return raffleConfig.erc20EntryFeeTokenAddress != address(0);
     }
 
     ///@notice checks that when payout Token type is ERC20, an ERC20 address other than address 0 is set
-    function _validateERC20PayoutTokenAddress() private view returns (bool) {
-        return raffleConfig.ERC20PayoutTokenAddress != address(0);
+    function _validateErc20PayoutTokenAddress() private view returns (bool) {
+        return raffleConfig.erc20PayoutTokenAddress != address(0);
     }
 }
