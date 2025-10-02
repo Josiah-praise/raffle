@@ -17,6 +17,7 @@ contract Raffle is Ownable, ReentrancyGuard {
 
     address payable[] public raffleParticipants; // addresses that paid the raffle fee to enter the raffle
     mapping(address => uint256) public donations; // tracks total donations per donor
+    uint256 public totalEntries;
     mapping(address => uint256) public entries; // tracks number of entries per raffle participant particularly needed for weighted raffles
 
     enum LifeCycle {
@@ -181,6 +182,7 @@ contract Raffle is Ownable, ReentrancyGuard {
 
         raffleParticipants.push(payable(msg.sender));
         entries[payable(msg.sender)] += 1; // increment entry count by 1
+        totalEntries += 1;
 
         // validate and collect payments
         if (raffleConfig.payoutType == TokenType.ERC20) {
@@ -223,6 +225,16 @@ contract Raffle is Ownable, ReentrancyGuard {
         _prizePool += msg.value;
 
         emit RaffleDonation(msg.sender, msg.value);
+    }
+
+    ///@notice allows querying raffle details
+    function getRaffleDetails()
+        public
+        view
+        returns (LifeCycle state, uint256 prizePool, uint256 entryCount, uint256 endTime, Type raffleType)
+    {
+        return
+            (raffleConfig.state, _prizePool, totalEntries, startTime + raffleConfig.duration, raffleConfig.raffleType);
     }
 
     ///@notice create a config struct for a newly created raffle
