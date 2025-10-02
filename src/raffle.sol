@@ -15,7 +15,7 @@ contract Raffle is Ownable, ReentrancyGuard {
     uint256 private _totalEntryFee; // an accumulation of the fees payed to enter the raffle
     uint256 private _prizePool; // an accumulation of funding(from the admin)  and donations
 
-    RaffleParticipant[] public raffleParticipants; // addresses that paid the raffle fee to enter the raffle
+    address payable[] public raffleParticipants; // addresses that paid the raffle fee to enter the raffle
     mapping(address => uint256) public donations; // tracks total donations per donor
     mapping(address => uint256) public entries; // tracks number of entries per raffle participant particularly needed for weighted raffles
 
@@ -37,10 +37,10 @@ contract Raffle is Ownable, ReentrancyGuard {
         BALANCED
     }
 
-    // this allows weighted raffle participation
-    struct RaffleParticipant {
-        address participant;
-    }
+    // // this allows weighted raffle participation
+    // struct RaffleParticipant {
+    //     address participant;
+    // }
     // the config for a raffle
 
     struct Config {
@@ -66,15 +66,24 @@ contract Raffle is Ownable, ReentrancyGuard {
         uint256 protocolPercentage
     );
     event RaffleFunded(uint256 amount);
+    event RaffleEntry(address indexed player, uint256 entryFee, TokenType tokenType);
 
     error InvalidDuration(uint256 _duration);
     error ZeroAddressError();
     error InvalidConfig();
     error PayoutTokenAddressNotSet();
-    error EntryFeeTokenAddressNotSet();
     error PrizePoolBalanceError();
     error InsufficientAllowanceError();
     error PayoutError();
+    error RaffleReentryError();
+    error RaffleNotActiveError();
+    error RaffleEntryFeeError();
+
+    modifier isActive() {
+        _updateLifeCycle();
+        if (raffleConfig.state != LifeCycle.ACTIVE) revert RaffleNotActiveError();
+        _;
+    }
 
     constructor(
         uint256 _duration,
@@ -87,9 +96,8 @@ contract Raffle is Ownable, ReentrancyGuard {
         address _raffleFactory,
         uint256 _protocolPercentage
     ) Ownable(_raffleAdmin) {
-        raffleConfig = _createConfig(
-            _duration, _payoutType, _entryFee, _minimumDonation, _raffleType, _protocolPercentage
-        );
+        raffleConfig =
+            _createConfig(_duration, _payoutType, _entryFee, _minimumDonation, _raffleType, _protocolPercentage);
 
         RAFFLE_FACTORY = _raffleFactory;
 
@@ -161,10 +169,13 @@ contract Raffle is Ownable, ReentrancyGuard {
     ///@notice changes a raffles state from INACTIVE to ACTIVE
     ///@dev an admin can call this anytime to activate a raffle and it only fails if the prizePool is empty (0)
     function activateRaffle() public onlyOwner {
+        // raffle can only be activated when in an inactive state
+        if (raffleConfig.state != LifeCycle.INACTIVE) return;
+        // raffle cannot be activated with an empty prize pool
         if (_prizePool == 0) revert PrizePoolBalanceError();
-        raffleConfig.state = LifeCycle.ACTIVE;
 
-        startTime = block.timestamp;
+        raffleConfig.state = LifeCycle.ACTIVE;
+        startTime = block.timestamp; // countdown begins
         _emitConfig();
     }
 
@@ -174,14 +185,14 @@ contract Raffle is Ownable, ReentrancyGuard {
         uint256 protocolFee = (_prizePool * raffleConfig.protocolPercentage) / 10000;
         uint256 winnerReward = _prizePool - protocolFee;
 
-        // pay protocol fee
         _prizePool -= protocolFee;
+        // transfer the protocol fee from the raffle contract to the raffle_factory
         bool protocolFeeSent = payoutToken.transferFrom(address(this), RAFFLE_FACTORY, protocolFee);
 
         if (!protocolFeeSent) revert PayoutError();
 
-        // send to winner
         _prizePool -= winnerReward;
+        // transfer erc20 to protocol winner
         bool rewardSent = payoutToken.transferFrom(address(this), winner, winnerReward);
 
         if (!rewardSent) revert PayoutError();
@@ -210,6 +221,12 @@ contract Raffle is Ownable, ReentrancyGuard {
 
     ///@notice allows an admin to fund a raffle with ERC20 tokens
     function fundRaffleWithErc20(uint256 amount, address from) public onlyOwner returns (bool) {
+        // a raffle is only fundable when in ACTIVE and INACTIVE states
+        if (
+            raffleConfig.state == LifeCycle.READY_FOR_DRAINAGE || raffleConfig.state == LifeCycle.READY_FOR_PAYOUT
+                || raffleConfig.state == LifeCycle.COMPLETE
+        ) return false;
+
         if (raffleConfig.payoutType != TokenType.ERC20) return false;
 
         if (_validateErc20PayoutTokenAddress() == false) revert PayoutTokenAddressNotSet();
@@ -226,12 +243,54 @@ contract Raffle is Ownable, ReentrancyGuard {
 
     ///@notice allows an admin to fund a raffle with ETH
     function fundRaffleWithEth() public payable onlyOwner returns (bool) {
+        // a raffle is only fundable when in ACTIVE and INACTIVE states
+        if (
+            raffleConfig.state == LifeCycle.READY_FOR_DRAINAGE || raffleConfig.state == LifeCycle.READY_FOR_PAYOUT
+                || raffleConfig.state == LifeCycle.COMPLETE
+        ) return false;
+
         if (raffleConfig.payoutType != TokenType.ETH) return false;
 
         _prizePool += msg.value;
 
         emit RaffleFunded(msg.value);
         return true;
+    }
+
+    ///@notice allows a user enter the raffle
+    function enterRaffle() public payable isActive {
+        // reentry is only allowed for weighted raffles
+        if (entries[payable(msg.sender)] != 0 && raffleConfig.raffleType == Type.BALANCED) revert RaffleReentryError();
+
+        raffleParticipants.push(payable(msg.sender));
+        entries[payable(msg.sender)] += 1; // increment entry count by 1
+
+        // validate and collect payments
+        if (raffleConfig.payoutType == TokenType.ERC20) {
+            bool success = payoutToken.transferFrom(msg.sender, address(this), raffleConfig.entryFee);
+            _prizePool += raffleConfig.entryFee;
+            _totalEntryFee += raffleConfig.entryFee;
+            if (!success) revert InsufficientAllowanceError();
+        } else {
+            _prizePool += msg.value;
+            _totalEntryFee += msg.value;
+            if (msg.value != raffleConfig.entryFee) revert RaffleEntryFeeError();
+        }
+
+        emit RaffleEntry(msg.sender, raffleConfig.entryFee, raffleConfig.payoutType);
+    }
+
+    ///@notice helper function to update raffleLifecycle
+    function _updateLifeCycle() internal {
+        if (startTime != 0 && block.timestamp < startTime + raffleConfig.duration) return;
+
+        if (raffleParticipants.length != 0) {
+            raffleConfig.state = LifeCycle.READY_FOR_PAYOUT;
+        } else {
+            raffleConfig.state = LifeCycle.READY_FOR_DRAINAGE;
+        }
+
+        _emitConfig();
     }
 
     ///@notice checks that when payout Token type is ERC20, an ERC20 address other than address 0 is set
