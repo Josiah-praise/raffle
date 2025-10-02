@@ -18,6 +18,7 @@ contract Raffle is Ownable, ReentrancyGuard {
     address payable[] public raffleParticipants; // addresses that paid the raffle fee to enter the raffle
     mapping(address => uint256) public donations; // tracks total donations per donor
     uint256 public totalEntries;
+    uint256 public totalFunds; // total funding from raffle owner
     mapping(address => uint256) public entries; // tracks number of entries per raffle participant particularly needed for weighted raffles
 
     enum LifeCycle {
@@ -38,12 +39,7 @@ contract Raffle is Ownable, ReentrancyGuard {
         BALANCED
     }
 
-    // // this allows weighted raffle participation
-    // struct RaffleParticipant {
-    //     address participant;
-    // }
     // the config for a raffle
-
     struct Config {
         uint256 duration;
         LifeCycle state;
@@ -83,6 +79,7 @@ contract Raffle is Ownable, ReentrancyGuard {
     error DonationError();
     error MinimumDonationError();
     error PayoutTypeError();
+    error InvalidDonationRefundError();
 
     modifier isActive() {
         _updateLifeCycle();
@@ -154,6 +151,7 @@ contract Raffle is Ownable, ReentrancyGuard {
         if (_validateErc20PayoutTokenAddress() == false) revert PayoutTokenAddressNotSet();
 
         _prizePool += amount;
+        totalFunds += amount;
 
         bool success = payoutToken.transferFrom(from, address(this), amount);
 
@@ -170,6 +168,7 @@ contract Raffle is Ownable, ReentrancyGuard {
         if (raffleConfig.payoutType != TokenType.ETH) return false;
 
         _prizePool += msg.value;
+        totalFunds += msg.value;
 
         emit RaffleFunded(msg.value);
         return true;
@@ -235,6 +234,27 @@ contract Raffle is Ownable, ReentrancyGuard {
     {
         return
             (raffleConfig.state, _prizePool, totalEntries, startTime + raffleConfig.duration, raffleConfig.raffleType);
+    }
+
+    ///@notice get donation refunds
+    ///@dev
+    function getDonationRefunds() public nonReentrant {
+        // donors can get refunds if and only if there's no entry into the raffle and the the raffle state is READY_FOR_DRAINAGE
+        _updateLifeCycle();
+        if (totalEntries != 0 || raffleConfig.state != LifeCycle.READY_FOR_DRAINAGE) {
+            revert InvalidDonationRefundError();
+        }
+        if (donations[msg.sender] == 0) revert InsufficientAllowanceError();
+        uint256 amount = donations[msg.sender];
+        donations[msg.sender] = 0;
+        _prizePool -= amount;
+        if (raffleConfig.payoutType == TokenType.ETH) {
+            (bool success,) = msg.sender.call{value: amount}("");
+            if (!success) revert InsufficientAllowanceError();
+        } else {
+            bool success = payoutToken.transfer(msg.sender, amount);
+            if (!success) revert InsufficientAllowanceError();
+        }
     }
 
     ///@notice create a config struct for a newly created raffle
@@ -316,7 +336,7 @@ contract Raffle is Ownable, ReentrancyGuard {
 
         _prizePool -= protocolFee;
         // transfer the protocol fee from the raffle contract to the raffle_factory
-        bool protocolFeeSent = payoutToken.transferFrom(address(this), RAFFLE_FACTORY, protocolFee);
+        bool protocolFeeSent = payoutToken.transfer(RAFFLE_FACTORY, protocolFee);
 
         if (!protocolFeeSent) revert PayoutError();
 
